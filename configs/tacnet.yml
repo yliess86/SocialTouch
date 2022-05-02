@@ -1,0 +1,6 @@
+#include base.yml
+
+model:
+  name: tacnet
+  h_dim: 256
+  nhead: 8
