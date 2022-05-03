@@ -60,7 +60,7 @@ class Interface:
 class Model:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.ckpt = torch.load(str(self.path.resolve()))
+        self.ckpt = torch.load(str(self.path.resolve()), map_location="cpu")
         self.conf: Config = self.ckpt["conf"]
         self.model = self.conf.model.make(self.conf.dataset.height, self.conf.dataset.width, 32, self.conf.dataset.window_size).eval()
         self.model.load_state_dict(self.ckpt["model"])
