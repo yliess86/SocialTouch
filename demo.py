@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from argparse import Namespace
 from pathlib import Path
 from scipy import spatial
 from socialtouch.config import Config
@@ -25,6 +26,8 @@ class Interface:
         self.buffer = np.zeros((self.tx, self.rx * self.n))
         self.lock = Lock()
         self.thread = Thread(target=self.update)
+        
+        self.start()
         
     def connect   (self) -> None : self.serial.write("connected\r\n".encode())
     def disconnect(self) -> None : self.serial.write("disconnected\r\n".encode())
@@ -112,10 +115,64 @@ class Clock:
         self.timer += dt
 
 
-def quit(interface: Interface) -> None:
-    interface.stop()
-    pg.quit()
-    exit(0)
+class App:
+    def __init__(self, args: Namespace) -> None:
+        for key, val in args._get_kwargs():
+            setattr(self, key, val)
+        
+        self.init()
+        self.screen = pg.display.set_mode((self.rx * self.n * self.scale, self.tx * self.scale)) if self.display else None
+        self.font = pg.font.SysFont("Ubuntu", 30) if self.display else None
+
+        self.interface = None if self.random else Interface(self.port, self.baud, self.rx, self.tx, self.n, self.min, self.max)
+        self.model = Model(Path(self.checkpoint))
+        self.player = Player(Path(self.data), self.k, self.thresh)
+        self.clock = Clock()
+
+    def init(self) -> None:
+        if self.display:
+            pg.init()
+            pg.font.init()
+        pg.mixer.init()
+
+    def draw(self, buffer: np.ndarray, probs: np.ndarray, idx: int) -> None:
+        if self.display:
+            buffer = buffer.astype(np.uint8)[:, :, None].repeat(3, axis=-1)
+            buffer = cv2.resize(buffer, (self.rx * self.n * self.scale, self.tx * self.scale), interpolation=cv2.INTER_CUBIC)
+            self.screen.blit(pg.image.frombuffer(buffer.tobytes(), buffer.shape[1::-1], "RGB"), (0, 0))
+            self.screen.blit(self.font.render(f"{self.clock.fps:.2f} FPS",                False, (255, 255, 255)), (25, 25))
+            self.screen.blit(self.font.render(f"G{idx:02d} {probs[idx] * 100:.2f}%", False, (255, 255, 255)), (25, 25 + 32))
+            pg.display.update()
+            pg.display.flip()
+        else: print(f"{self.clock.fps:.2f} FPS | G{idx:02d} {probs[idx] * 100:.2f}%", end="\r")
+
+    def quit(self) -> None:
+        if self.interface is not None: self.interface.stop()
+        pg.quit()
+        exit(0)
+
+    def events(self) -> None:
+        if self.display:
+            for event in pg.event.get():
+                if event.type == pg.QUIT: self.quit()
+                if event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE: self.quit()
+
+    def run(self) -> None:
+        try:
+            while True:
+                self.events()
+                
+                buffer = np.random.random((self.tx, self.rx * self.n)) if self.random else self.interface.read()
+                probs, idx = self.model(buffer)
+                if self.clock.timer > self.timer:
+                    self.clock.timer = 0
+                    self.player(probs, idx)
+
+                self.draw(buffer, probs, idx)
+                self.clock.update()
+        
+        except KeyboardInterrupt:
+            self.quit()
 
 
 if __name__ == "__main__":
@@ -123,53 +180,21 @@ if __name__ == "__main__":
 
 
     parser = ArgumentParser()
-    parser.add_argument("-c", "--checkpoint", type=str,   default="res/racnet_48_1.pt")
-    parser.add_argument("-d", "--data",       type=str,   default="audio")
-    parser.add_argument("-p", "--port",       type=str,   default="/dev/ttyUSB0")
-    parser.add_argument("-b", "--baud",       type=int,   default=2_000_000)
-    parser.add_argument("-m", "--min",        type=int,   default=10)
-    parser.add_argument("-M", "--max",        type=int,   default=100)
-    parser.add_argument(      "--rx",         type=int,   default=12)
-    parser.add_argument(      "--tx",         type=int,   default=19)
-    parser.add_argument(      "--n",          type=int,   default=2)
-    parser.add_argument(      "--scale",      type=int,   default=30)
-    parser.add_argument(      "--thresh",     type=float, default=0.7)
-    parser.add_argument(      "--k",          type=int,   default=10)
-    parser.add_argument(      "--timer",      type=float, default=0.5)
+    parser.add_argument("-c", "--checkpoint", type=str,   default="res/racnet_48_1.pt", help="Path to the model checkpoint"                                          )
+    parser.add_argument("-d", "--data",       type=str,   default="audio",              help="Path to the data directory"                                            )
+    parser.add_argument("-p", "--port",       type=str,   default="/dev/ttyUSB0",       help="Port for the muca"                                                     )
+    parser.add_argument("-b", "--baud",       type=int,   default=2_000_000,            help="Baud rate for the muca"                                                )
+    parser.add_argument("-m", "--min",        type=int,   default=10,                   help="Minimum threshold for the raw values"                                  )
+    parser.add_argument("-M", "--max",        type=int,   default=100,                  help="Maximum threshold for the raw values"                                  )
+    parser.add_argument(      "--rx",         type=int,   default=12,                   help="Number of columns"                                                     )
+    parser.add_argument(      "--tx",         type=int,   default=19,                   help="Number of rows"                                                        )
+    parser.add_argument(      "--n",          type=int,   default=2,                    help="Number of muca"                                                        )
+    parser.add_argument(      "--scale",      type=int,   default=30,                   help="Number of pixel per cell"                                              )
+    parser.add_argument(      "--thresh",     type=float, default=0.7,                  help="Probability threshold to accept a prediction as valid"                 )
+    parser.add_argument(      "--k",          type=int,   default=10,                   help="Number of neihgbour to consider in the kd-tree"                        )
+    parser.add_argument(      "--timer",      type=float, default=0.5,                  help="Time to wait before sounds"                                            )
+    parser.add_argument(      "--display",    action="store_true",                      help="Display buffer on screen (require video server)"                       )
+    parser.add_argument(      "--random",     action="store_true",                      help="Generate random buffer and do not use the interface (useful for debug)")
     args = parser.parse_args()
 
-    pg.init()
-    pg.font.init()
-    pg.mixer.init()
-
-    screen = pg.display.set_mode((args.rx * args.n * args.scale, args.tx * args.scale))
-    font = pg.font.SysFont("Ubuntu", 30)
-    
-    interface = Interface(args.port, args.baud, args.rx, args.tx, args.n, args.min, args.max)
-    model = Model(Path(args.checkpoint))
-    player = Player(Path(args.data), args.k, args.thresh)
-
-    clock = Clock()
-    interface.start()
-    while True:
-        for event in pg.event.get():
-            if event.type == pg.QUIT: quit(interface)
-            if event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE: quit(interface)
-        
-        buffer = interface.read()
-        probs, idx = model(buffer)
-        if clock.timer > args.timer:
-            clock.timer = 0
-            player(probs, idx)
-
-        buffer = buffer.astype(np.uint8)[:, :, None].repeat(3, axis=-1)
-        buffer = cv2.resize(buffer, (args.rx * args.n * args.scale, args.tx * args.scale), interpolation=cv2.INTER_CUBIC)
-        surface = pg.image.frombuffer(buffer.tobytes(), buffer.shape[1::-1], "RGB")
-
-        screen.blit(surface, (0, 0))
-        screen.blit(font.render(f"{clock.fps:.2f} FPS",                False, (255, 255, 255)), (25, 25))
-        screen.blit(font.render(f"G{idx:02d} {probs[idx] * 100:.2f}%", False, (255, 255, 255)), (25, 25 + 32))
-
-        pg.display.update()
-        pg.display.flip()
-        clock.update()
+    App(args).run()
