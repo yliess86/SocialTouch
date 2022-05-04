@@ -147,6 +147,9 @@ class App:
             pg.display.flip()
         else: print(f"{self.clock.fps:.2f} FPS | G{idx:02d} {probs[idx] * 100:.2f}%", end="\r")
 
+    def activity(self, buffer: np.ndarray) -> bool:
+        return np.sum(buffer / 255.0) / np.product(buffer.shape) > self.calib_thresh
+
     def quit(self) -> None:
         if self.interface is not None: self.interface.stop()
         pg.quit()
@@ -164,16 +167,17 @@ class App:
                 self.events()
                 
                 buffer = np.random.random((self.tx, self.rx * self.n)) if self.random else self.interface.read()
+                activity = self.activity(buffer)
                 probs, idx = self.model(buffer)
                 
                 if self.clock.timer > self.timer:
                     self.clock.timer = 0
                     self.player(probs, idx)
 
+                if activity: self.clock.calib = 0
                 if self.clock.calib > self.calib and self.interface is not None:
-                    if np.sum(buffer / 255.0) / np.product(buffer.shape) > self.calib_thresh:
-                        self.clock.calib = 0
-                        self.interface.calibrate()
+                    self.clock.calib = 0
+                    self.interface.calibrate()
 
                 self.draw(buffer, probs, idx)
                 self.clock.update()
