@@ -105,15 +105,20 @@ class Player:
 
 class Clock:
     def __init__(self) -> None:
-        self.last, self.fps, self.timer, self.calib = time(), 0, 0, 0 
+        self.last, self.fps = time(), 0
+        self.timer, self.calib = 0, 0
+        self.refresh = 0
 
     def update(self) -> None:
         current = time()
         dt = current - self.last
+        
         self.last = current
         self.fps = 1 / dt
+        
         self.timer += dt
         self.calib += dt
+        self.refresh += dt
 
 
 class App:
@@ -164,6 +169,9 @@ class App:
     def run(self) -> None:
         try:
             while True:
+                if self.cap and self.clock.refresh < 1.0 / 30: continue
+                self.clock.refresh = 0
+
                 self.events()
                 
                 buffer = np.random.random((self.tx, self.rx * self.n)) if self.random else self.interface.read()
@@ -208,6 +216,7 @@ if __name__ == "__main__":
     parser.add_argument(      "--calib_thresh", type=float, default=0.2,                  help="Calibration threshold in percent"                                      )
     parser.add_argument(      "--display",      action="store_true",                      help="Display buffer on screen (require video server)"                       )
     parser.add_argument(      "--random",       action="store_true",                      help="Generate random buffer and do not use the interface (useful for debug)")
+    parser.add_argument(      "--cap",          action="store_true",                      help="Cap to 30 FPS")
     args = parser.parse_args()
 
     App(args).run()
