@@ -73,7 +73,7 @@ class Model:
         
         h, w = min(bh, sh), min(bw, sw)
         self.sequence_buffer[:, :-1] = self.sequence_buffer[:, 1:].clone()
-        self.sequence_buffer[:, -1, :, :h, :w] = torch.from_numpy(buffer[None, :h, :w])
+        self.sequence_buffer[:, -1, :, :h, :w] = torch.from_numpy(buffer[None, :h, :w] / 255.0)
 
         probs = torch.softmax(self.model(self.sequence_buffer), dim=1).squeeze(0)
         probs = probs.cpu().numpy()
@@ -105,7 +105,7 @@ class Player:
 
 class Clock:
     def __init__(self) -> None:
-        self.last, self.fps, self.timer = time(), 0, 0 
+        self.last, self.fps, self.timer, self.calib = time(), 0, 0, 0 
 
     def update(self) -> None:
         current = time()
@@ -113,6 +113,7 @@ class Clock:
         self.last = current
         self.fps = 1 / dt
         self.timer += dt
+        self.calib += dt
 
 
 class App:
@@ -164,9 +165,15 @@ class App:
                 
                 buffer = np.random.random((self.tx, self.rx * self.n)) if self.random else self.interface.read()
                 probs, idx = self.model(buffer)
+                
                 if self.clock.timer > self.timer:
                     self.clock.timer = 0
                     self.player(probs, idx)
+
+                if self.clock.calib > self.calib and self.interface is not None:
+                    if np.sum(buffer / 255.0) / np.product(buffer.shape) > self.calib_thresh:
+                        self.clock.calib = 0
+                        self.interface.calibrate()
 
                 self.draw(buffer, probs, idx)
                 self.clock.update()
@@ -180,21 +187,23 @@ if __name__ == "__main__":
 
 
     parser = ArgumentParser()
-    parser.add_argument("-c", "--checkpoint", type=str,   default="res/racnet_48_1.pt", help="Path to the model checkpoint"                                          )
-    parser.add_argument("-d", "--data",       type=str,   default="audio",              help="Path to the data directory"                                            )
-    parser.add_argument("-p", "--port",       type=str,   default="/dev/ttyUSB0",       help="Port for the muca"                                                     )
-    parser.add_argument("-b", "--baud",       type=int,   default=2_000_000,            help="Baud rate for the muca"                                                )
-    parser.add_argument("-m", "--min",        type=int,   default=10,                   help="Minimum threshold for the raw values"                                  )
-    parser.add_argument("-M", "--max",        type=int,   default=100,                  help="Maximum threshold for the raw values"                                  )
-    parser.add_argument(      "--rx",         type=int,   default=12,                   help="Number of columns"                                                     )
-    parser.add_argument(      "--tx",         type=int,   default=19,                   help="Number of rows"                                                        )
-    parser.add_argument(      "--n",          type=int,   default=2,                    help="Number of muca"                                                        )
-    parser.add_argument(      "--scale",      type=int,   default=30,                   help="Number of pixel per cell"                                              )
-    parser.add_argument(      "--thresh",     type=float, default=0.7,                  help="Probability threshold to accept a prediction as valid"                 )
-    parser.add_argument(      "--k",          type=int,   default=10,                   help="Number of neihgbour to consider in the kd-tree"                        )
-    parser.add_argument(      "--timer",      type=float, default=0.5,                  help="Time to wait before sounds"                                            )
-    parser.add_argument(      "--display",    action="store_true",                      help="Display buffer on screen (require video server)"                       )
-    parser.add_argument(      "--random",     action="store_true",                      help="Generate random buffer and do not use the interface (useful for debug)")
+    parser.add_argument("-c", "--checkpoint",   type=str,   default="res/racnet_48_1.pt", help="Path to the model checkpoint"                                          )
+    parser.add_argument("-d", "--data",         type=str,   default="audio",              help="Path to the data directory"                                            )
+    parser.add_argument("-p", "--port",         type=str,   default="/dev/ttyUSB0",       help="Port for the muca"                                                     )
+    parser.add_argument("-b", "--baud",         type=int,   default=2_000_000,            help="Baud rate for the muca"                                                )
+    parser.add_argument("-m", "--min",          type=int,   default=10,                   help="Minimum threshold for the raw values"                                  )
+    parser.add_argument("-M", "--max",          type=int,   default=100,                  help="Maximum threshold for the raw values"                                  )
+    parser.add_argument(      "--rx",           type=int,   default=12,                   help="Number of columns"                                                     )
+    parser.add_argument(      "--tx",           type=int,   default=19,                   help="Number of rows"                                                        )
+    parser.add_argument(      "--n",            type=int,   default=2,                    help="Number of muca"                                                        )
+    parser.add_argument(      "--scale",        type=int,   default=30,                   help="Number of pixel per cell"                                              )
+    parser.add_argument(      "--thresh",       type=float, default=0.7,                  help="Probability threshold to accept a prediction as valid"                 )
+    parser.add_argument(      "--k",            type=int,   default=10,                   help="Number of neihgbour to consider in the kd-tree"                        )
+    parser.add_argument(      "--timer",        type=float, default=0.5,                  help="Time to wait before sounds"                                            )
+    parser.add_argument(      "--calib",        type=float, default=10.0,                 help="Time to wait before auto calibration"                                  )
+    parser.add_argument(      "--calib_thresh", type=float, default=0.2,                  help="Calibration threshold in percent"                                      )
+    parser.add_argument(      "--display",      action="store_true",                      help="Display buffer on screen (require video server)"                       )
+    parser.add_argument(      "--random",       action="store_true",                      help="Generate random buffer and do not use the interface (useful for debug)")
     args = parser.parse_args()
 
     App(args).run()
