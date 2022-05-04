@@ -4,7 +4,7 @@ from argparse import Namespace
 from pathlib import Path
 from scipy import spatial
 from socialtouch.config import Config
-from time import time
+from time import (sleep, time)
 from threading import (Lock, Thread)
 from tqdm import tqdm
 
@@ -104,21 +104,25 @@ class Player:
 
 
 class Clock:
-    def __init__(self) -> None:
+    def __init__(self, cap: int = None) -> None:
+        self.cap = None if cap is None else 1.0 / cap 
         self.last, self.fps = time(), 0
         self.timer, self.calib = 0, 0
-        self.refresh = 0
+        self.elapsed = 0
+
+    def sleep(self, dt: float) -> None:
+        if self.cap is None: return
+        if dt < self.cap: sleep(abs(self.cap - dt))
 
     def update(self) -> None:
         current = time()
         dt = current - self.last
-        
         self.last = current
         self.fps = 1 / dt
-        
         self.timer += dt
         self.calib += dt
-        self.refresh += dt
+        self.elapsed += dt
+        self.sleep(dt)
 
 
 class App:
@@ -133,13 +137,18 @@ class App:
         self.interface = None if self.random else Interface(self.port, self.baud, self.rx, self.tx, self.n, self.min, self.max)
         self.model = Model(Path(self.checkpoint))
         self.player = Player(Path(self.data), self.k, self.thresh)
-        self.clock = Clock()
+        self.clock = Clock(self.cap)
 
     def init(self) -> None:
         if self.display:
             pg.init()
             pg.font.init()
         pg.mixer.init()
+
+    def quit(self) -> None:
+        if self.interface is not None: self.interface.stop()
+        pg.quit()
+        exit(0)
 
     def draw(self, buffer: np.ndarray, probs: np.ndarray, idx: int) -> None:
         if self.display:
@@ -155,39 +164,44 @@ class App:
     def activity(self, buffer: np.ndarray) -> bool:
         return np.sum(buffer / 255.0) / np.product(buffer.shape) > self.calib_thresh
 
-    def quit(self) -> None:
-        if self.interface is not None: self.interface.stop()
-        pg.quit()
-        exit(0)
-
     def events(self) -> None:
         if self.display:
             for event in pg.event.get():
                 if event.type == pg.QUIT: self.quit()
                 if event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE: self.quit()
 
+    def read(self) -> np.ndarray:
+        if self.random:
+            scale = np.sin(self.clock.elapsed)
+            signal = np.random.randint(0, 255 + 1, (self.tx, self.rx * self.n))
+            return scale * signal
+        return self.interface.read()
+
+    def play(self, probs: np.ndarray, idx: int) -> None:
+        if self.clock.timer > self.timer:
+            self.clock.timer = 0
+            self.player(probs, idx)
+
+    def calibrate(self, activity: bool) -> None:
+        if activity: self.clock.calib = 0
+        if self.clock.calib > self.calib:
+            self.clock.calib = 0
+            if self.interface is not None:
+                self.interface.calibrate()
+
     def run(self) -> None:
         try:
             while True:
-                if self.cap and self.clock.refresh < 1.0 / 30: continue
-                self.clock.refresh = 0
-
                 self.events()
                 
-                buffer = np.random.random((self.tx, self.rx * self.n)) if self.random else self.interface.read()
+                buffer = self.read()
                 activity = self.activity(buffer)
                 probs, idx = self.model(buffer)
                 
-                if self.clock.timer > self.timer:
-                    self.clock.timer = 0
-                    self.player(probs, idx)
-
-                if activity: self.clock.calib = 0
-                if self.clock.calib > self.calib and self.interface is not None:
-                    self.clock.calib = 0
-                    self.interface.calibrate()
-
+                self.calibrate(activity)
+                self.play(probs, idx)
                 self.draw(buffer, probs, idx)
+                
                 self.clock.update()
         
         except KeyboardInterrupt:
@@ -205,6 +219,7 @@ if __name__ == "__main__":
     parser.add_argument("-b", "--baud",         type=int,   default=2_000_000,            help="Baud rate for the muca"                                                )
     parser.add_argument("-m", "--min",          type=int,   default=10,                   help="Minimum threshold for the raw values"                                  )
     parser.add_argument("-M", "--max",          type=int,   default=100,                  help="Maximum threshold for the raw values"                                  )
+    parser.add_argument(      "--cap",          type=int,   default=30,                   help="FPS cap"                                                               )
     parser.add_argument(      "--rx",           type=int,   default=12,                   help="Number of columns"                                                     )
     parser.add_argument(      "--tx",           type=int,   default=19,                   help="Number of rows"                                                        )
     parser.add_argument(      "--n",            type=int,   default=2,                    help="Number of muca"                                                        )
@@ -216,7 +231,6 @@ if __name__ == "__main__":
     parser.add_argument(      "--calib_thresh", type=float, default=0.2,                  help="Calibration threshold in percent"                                      )
     parser.add_argument(      "--display",      action="store_true",                      help="Display buffer on screen (require video server)"                       )
     parser.add_argument(      "--random",       action="store_true",                      help="Generate random buffer and do not use the interface (useful for debug)")
-    parser.add_argument(      "--cap",          action="store_true",                      help="Cap to 30 FPS")
     args = parser.parse_args()
 
     App(args).run()
