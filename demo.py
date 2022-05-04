@@ -135,9 +135,11 @@ class App:
         self.font = pg.font.SysFont("Ubuntu", 30) if self.display else None
 
         self.interface = None if self.random else Interface(self.port, self.baud, self.rx, self.tx, self.n, self.min, self.max)
-        self.model = Model(Path(self.checkpoint))
-        self.player = Player(Path(self.data), self.k, self.thresh)
+        self.model = Model(Path(Path(__file__).parent, self.checkpoint))
+        self.player = Player(Path(Path(__file__).parent, self.data), self.k, self.thresh)
         self.clock = Clock(self.cap)
+
+        self.ref = 0.0
 
     def init(self) -> None:
         if self.display:
@@ -161,9 +163,6 @@ class App:
             pg.display.flip()
         else: print(f"{self.clock.fps:.2f} FPS | G{idx:02d} {probs[idx] * 100:.2f}%", end="\r")
 
-    def activity(self, buffer: np.ndarray) -> bool:
-        return np.sum(buffer / 255.0) / np.product(buffer.shape) > self.calib_thresh
-
     def events(self) -> None:
         if self.display:
             for event in pg.event.get():
@@ -172,7 +171,7 @@ class App:
 
     def read(self) -> np.ndarray:
         if self.random:
-            scale = np.sin(self.clock.elapsed)
+            scale = 0.5 + 0.5 * np.sin(0.2 * self.clock.elapsed)
             signal = np.random.randint(0, 255 + 1, (self.tx, self.rx * self.n))
             return scale * signal
         return self.interface.read()
@@ -182,8 +181,13 @@ class App:
             self.clock.timer = 0
             self.player(probs, idx)
 
-    def calibrate(self, activity: bool) -> None:
+    def calibrate(self, buffer: np.ndarray) -> None:
+        value = np.sum(buffer / 255.0) / np.product(buffer.shape)
+        activity = (self.ref - self.calib_thresh) > value > (self.ref + self.calib_thresh)
+        
         if activity: self.clock.calib = 0
+        else: self.ref = 0.5 * (self.ref + value)
+        
         if self.clock.calib > self.calib:
             self.clock.calib = 0
             if self.interface is not None:
@@ -195,10 +199,9 @@ class App:
                 self.events()
                 
                 buffer = self.read()
-                activity = self.activity(buffer)
                 probs, idx = self.model(buffer)
                 
-                self.calibrate(activity)
+                self.calibrate(buffer)
                 self.play(probs, idx)
                 self.draw(buffer, probs, idx)
                 
@@ -228,7 +231,7 @@ if __name__ == "__main__":
     parser.add_argument(      "--k",            type=int,   default=10,                   help="Number of neihgbour to consider in the kd-tree"                        )
     parser.add_argument(      "--timer",        type=float, default=0.5,                  help="Time to wait before sounds"                                            )
     parser.add_argument(      "--calib",        type=float, default=10.0,                 help="Time to wait before auto calibration"                                  )
-    parser.add_argument(      "--calib_thresh", type=float, default=0.2,                  help="Calibration threshold in percent"                                      )
+    parser.add_argument(      "--calib_thresh", type=float, default=0.02,                 help="Calibration threshold in percent"                                      )
     parser.add_argument(      "--display",      action="store_true",                      help="Display buffer on screen (require video server)"                       )
     parser.add_argument(      "--random",       action="store_true",                      help="Generate random buffer and do not use the interface (useful for debug)")
     args = parser.parse_args()
